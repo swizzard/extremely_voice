@@ -1,7 +1,9 @@
 import json
 import logging
+import os
 import re
 import time
+import random
 import sys
 
 import requests
@@ -23,29 +25,70 @@ def get_summary(url):
         req.raise_for_status()
     except requests.exceptions.HTTPError as e:
         logging.exception(e.message)
-        pass
     else:
-        return {k:v for k,v in req.json().iteritems() if k in
-                ('extract', 'title')}
+        js = req.json()
+        out = {'extract': js['extract'], 'title': js['title']}
+        thumbnail = js.get('thumbnail')
+        if thumbnail is not None:
+            out['thumbnail'] = thumbnail['source']
+        return out
 
 
-def assemble_tweet(summary):
+def get_image(img_url, client):
+    req = requests.get(img_url, stream=True)
+    try:
+        req.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        logging.exception(e.message)
+    else:
+        with open('image', 'wb') as img_file:
+            for chunk in req:
+                img_file.write(chunk)
+        with open('image', 'rb') as img_file:
+            try:
+                resp = client.upload_media(media=img_file)
+            except Exception as e:
+                logging.exception(e.message)
+            else:
+                return resp['media_id']
+        os.remove('image')
+
+
+def clean_title(title):
+    return re.sub(r' \(.*?\)', '', title)
+
+
+def assemble_text_tweet(summary):
     s = "*extremely {title} voice*\nI'm {desc}"
-    clean_title = re.sub(r' \(.*?\)', '', summary['title'])
-    match = re.match(r'.*?is (.*?\.)', summary['extract'])
+    title = clean_title(summary['title'])
+    match = re.match(r'.*?\bis (.*?\.)', summary['extract'])
     if match is not None:
-        return s.format(title=clean_title, desc=match.group(1))
+        return {'status': s.format(title=title, desc=match.group(1))}
 
 
-def tweets():
+def assemble_img_tweet(summary, client):
+    s = "*extremely {title} voice*\nit me\n"
+    media_id = get_image(summary['thumbnail'], client)
+    if media_id is not None:
+        title = clean_title(summary['title'])
+        return {'status': s.format(title=title), 'media_ids': [media_id]} 
+
+
+def tweets(client):
     for url in rand_urls():
-        try:
-            t = assemble_tweet(get_summary(url))
-        except Exception as e:
-            logging.exception(e.message)
-        else:
-            if t is not None and len(t) <= 140:
-                yield t
+        summary = get_summary(url)
+        if summary is not None:
+            thumb = summary.get('thumbnail')
+            try:
+                if thumb is not None and random.random() > 0.0:
+                    t = assemble_img_tweet(summary, client)
+                else:
+                    t = assemble_text_tweet(summary)
+            except Exception as e:
+                logging.exception(e.message)
+            else:
+                if t is not None and len(t['status']) <= 140:
+                    yield t
 
 
 def get_client(cfg_path):
@@ -58,14 +101,20 @@ def get_client(cfg_path):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(filename='extremely_voice.log', level=logging.DEBUG)
+    # logging.basicConfig(filename='extremely_voice.log', level=logging.WARNING)
+    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     path = sys.argv[1]
+    dry = len(sys.argv) > 2 and sys.argv[2] == 'dry'
     client = get_client(path)
-    for tweet in tweets():
-        try:
-            client.update_status(status=tweet)
-        except Exception as e:
-            logging.exception(e.message)
+    for tweet in tweets(client):
+        if not dry:
+            try:
+                client.update_status(**tweet)
+            except Exception as e:
+                logging.exception(e.message)
+            else:
+                time.sleep(1800)
         else:
-            time.sleep(1800)
+            print tweet
+            break
 
