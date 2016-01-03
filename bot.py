@@ -21,7 +21,8 @@ def get_summary(url):
     req = requests.get(url)
     try:
         req.raise_for_status()
-    except requests.exceptions.HTTPError:
+    except requests.exceptions.HTTPError as e:
+        logging.exception(e.message)
         pass
     else:
         return {k:v for k,v in req.json().iteritems() if k in
@@ -38,9 +39,13 @@ def assemble_tweet(summary):
 
 def tweets():
     for url in rand_urls():
-        t = assemble_tweet(get_summary(url))
-        if t is not None and len(t) <= 140:
-            yield t
+        try:
+            t = assemble_tweet(get_summary(url))
+        except Exception as e:
+            logging.exception(e.message)
+        else:
+            if t is not None and len(t) <= 140:
+                yield t
 
 
 def get_client(cfg_path):
@@ -53,14 +58,14 @@ def get_client(cfg_path):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(filename='extremely_voice.log')
+    logging.basicConfig(filename='extremely_voice.log', level=logging.DEBUG)
     path = sys.argv[1]
     client = get_client(path)
     for tweet in tweets():
         try:
             client.update_status(status=tweet)
-        except Exception:
-            logging.exception()
+        except Exception as e:
+            logging.exception(e.message)
         else:
             time.sleep(1800)
 
